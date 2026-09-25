@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { profileRouter } from "./modules/profile/router.js";
 
-// Resource routers are mounted here as each user story lands.
 export const v1Router = Router();
+v1Router.use(profileRouter);
