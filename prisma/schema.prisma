@@ -1,0 +1,340 @@
+// Nelson v0.1 data model — see specs/001-nelson-budget-v01/data-model.md
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  runtime             = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Currency {
+  USD
+  COP
+}
+
+enum ThemePreference {
+  SYSTEM
+  LIGHT
+  DARK
+}
+
+enum OnboardingStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+enum Frequency {
+  ONE_TIME
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+  CUSTOM_DAYS
+  CUSTOM_MONTHS
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  BROKERAGE
+  WALLET
+  CASH
+}
+
+enum PayorType {
+  EMPLOYER
+  INVESTMENT
+  RENTAL
+  OTHER
+}
+
+enum VendorType {
+  UTILITY
+  SUBSCRIPTION
+  STORE
+  SERVICE
+  OTHER
+}
+
+// ---------- Better Auth tables (user + profile fields) ----------
+
+model User {
+  id               String           @id
+  name             String
+  email            String           @unique
+  emailVerified    Boolean          @default(false)
+  image            String?
+  username         String           @unique
+  displayUsername  String?
+  firstName        String
+  lastName         String
+  address          String
+  city             String
+  postalCode       String
+  state            String
+  country          String
+  phoneCountryCode String
+  phoneNumber      String
+  timezone         String
+  themePreference  ThemePreference  @default(SYSTEM)
+  onboardingStatus OnboardingStatus @default(PENDING)
+  createdAt        DateTime         @default(now()) @db.Timestamptz
+  updatedAt        DateTime         @updatedAt @db.Timestamptz
+
+  sessions      Session[]
+  accounts      Account[]
+  budgets       Budget[]
+  moneyAccounts MoneyAccount[]
+  payors        Payor[]
+  vendors       Vendor[]
+  transactions  Transaction[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime @db.Timestamptz
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  @@index([userId])
+  @@map("session")
+}
+
+// Better Auth credential/provider accounts (not money accounts)
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz
+  refreshTokenExpiresAt DateTime? @db.Timestamptz
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @db.Timestamptz
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz
+  createdAt  DateTime @default(now()) @db.Timestamptz
+  updatedAt  DateTime @updatedAt @db.Timestamptz
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model RateLimit {
+  id          String @id @default(cuid())
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+
+  @@map("rate_limit")
+}
+
+// ---------- Budgets ----------
+
+model Budget {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  currency    Currency
+  startDate   DateTime   @db.Date
+  endDate     DateTime   @db.Date
+  categories  Category[]
+  createdAt   DateTime   @default(now()) @db.Timestamptz
+  updatedAt   DateTime   @updatedAt @db.Timestamptz
+
+  @@index([userId, currency])
+}
+
+model Category {
+  id          String       @id @default(cuid())
+  budgetId    String
+  budget      Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  type        CategoryType
+  name        String
+  description String?
+  items       BudgetItem[]
+  createdAt   DateTime     @default(now()) @db.Timestamptz
+  updatedAt   DateTime     @updatedAt @db.Timestamptz
+
+  @@index([budgetId])
+}
+
+model BudgetItem {
+  id                String        @id @default(cuid())
+  categoryId        String
+  category          Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  name              String
+  description       String
+  startDate         DateTime      @db.Date
+  endDate           DateTime      @db.Date
+  estimatedAmount   Decimal       @db.Decimal(14, 2)
+  firstExpectedDate DateTime      @db.Date
+  frequency         Frequency
+  customInterval    Int?
+  buckets           Bucket[]
+  transactions      Transaction[]
+  createdAt         DateTime      @default(now()) @db.Timestamptz
+  updatedAt         DateTime      @updatedAt @db.Timestamptz
+
+  @@index([categoryId])
+}
+
+model Bucket {
+  id              String        @id @default(cuid())
+  itemId          String
+  item            BudgetItem    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  sequence        Int
+  startDate       DateTime      @db.Date
+  endDate         DateTime      @db.Date
+  expectedDate    DateTime      @db.Date
+  estimatedAmount Decimal       @db.Decimal(14, 2)
+  actualAmount    Decimal       @default(0) @db.Decimal(14, 2)
+  actualDate      DateTime?     @db.Date
+  transactions    Transaction[]
+  createdAt       DateTime      @default(now()) @db.Timestamptz
+  updatedAt       DateTime      @updatedAt @db.Timestamptz
+
+  @@unique([itemId, sequence])
+  @@index([itemId, startDate])
+}
+
+// ---------- Money accounts, payors, vendors ----------
+
+// "Account" in the spec; named MoneyAccount because Better Auth owns the `account` table.
+model MoneyAccount {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  description      String?
+  type             AccountType
+  currency         Currency
+  openingBalance   Decimal       @db.Decimal(14, 2)
+  currentBalance   Decimal       @db.Decimal(14, 2)
+  address          String?
+  city             String?
+  postalCode       String?
+  state            String?
+  country          String?
+  phoneCountryCode String?
+  phoneNumber      String?
+  transactions     Transaction[]
+  createdAt        DateTime      @default(now()) @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @db.Timestamptz
+
+  @@index([userId])
+  @@map("money_account")
+}
+
+model Payor {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  description      String?
+  type             PayorType
+  currency         Currency
+  address          String?
+  city             String?
+  postalCode       String?
+  state            String?
+  country          String?
+  phoneCountryCode String?
+  phoneNumber      String?
+  transactions     Transaction[]
+  createdAt        DateTime      @default(now()) @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @db.Timestamptz
+
+  @@index([userId])
+}
+
+model Vendor {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  description      String?
+  type             VendorType
+  currency         Currency
+  address          String?
+  city             String?
+  postalCode       String?
+  state            String?
+  country          String?
+  phoneCountryCode String?
+  phoneNumber      String?
+  transactions     Transaction[]
+  createdAt        DateTime      @default(now()) @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @db.Timestamptz
+
+  @@index([userId])
+}
+
+// ---------- Transactions ----------
+
+model Transaction {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemId     String
+  item       BudgetItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  bucketId   String
+  bucket     Bucket       @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+  type       CategoryType
+  amount     Decimal      @db.Decimal(14, 2)
+  currency   Currency
+  occurredAt DateTime     @db.Timestamptz
+  timezone   String
+  localDate  DateTime     @db.Date
+  accountId  String
+  account    MoneyAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  payorId    String?
+  payor      Payor?       @relation(fields: [payorId], references: [id], onDelete: Restrict)
+  vendorId   String?
+  vendor     Vendor?      @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  createdAt  DateTime     @default(now()) @db.Timestamptz
+  updatedAt  DateTime     @updatedAt @db.Timestamptz
+
+  @@index([userId, localDate])
+  @@index([itemId])
+  @@index([bucketId])
+  @@index([accountId])
+  @@index([payorId])
+  @@index([vendorId])
+}
