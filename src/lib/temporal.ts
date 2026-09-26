@@ -10,8 +10,11 @@ export function fromPlainDate(date: Temporal.PlainDate | string): Date {
   return new Date(`${date.toString()}T00:00:00.000Z`);
 }
 
+// Built from Date.now() so tests can control the clock.
 export function todayIn(timezone: string): Temporal.PlainDate {
-  return Temporal.Now.plainDateISO(timezone);
+  return Temporal.Instant.fromEpochMilliseconds(Date.now())
+    .toZonedDateTimeISO(timezone)
+    .toPlainDate();
 }
 
 /**

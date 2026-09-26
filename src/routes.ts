@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { accountsRouter } from "./modules/accounts/router.js";
+import { dashboardRouter } from "./modules/dashboard/router.js";
+import { reportsRouter } from "./modules/reports/router.js";
 import { budgetsRouter } from "./modules/budgets/router.js";
 import { categoriesRouter } from "./modules/categories/router.js";
 import { itemsRouter } from "./modules/items/router.js";
@@ -17,3 +19,5 @@ v1Router.use(accountsRouter);
 v1Router.use(payorsRouter);
 v1Router.use(vendorsRouter);
 v1Router.use(transactionsRouter);
+v1Router.use(dashboardRouter);
+v1Router.use(reportsRouter);
