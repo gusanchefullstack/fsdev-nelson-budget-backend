@@ -4,6 +4,7 @@ import { budgetsRouter } from "./modules/budgets/router.js";
 import { categoriesRouter } from "./modules/categories/router.js";
 import { itemsRouter } from "./modules/items/router.js";
 import { payorsRouter } from "./modules/payors/router.js";
+import { transactionsRouter } from "./modules/transactions/router.js";
 import { profileRouter } from "./modules/profile/router.js";
 import { vendorsRouter } from "./modules/vendors/router.js";
 
@@ -15,3 +16,4 @@ v1Router.use(itemsRouter);
 v1Router.use(accountsRouter);
 v1Router.use(payorsRouter);
 v1Router.use(vendorsRouter);
+v1Router.use(transactionsRouter);
