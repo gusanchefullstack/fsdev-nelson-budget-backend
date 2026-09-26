@@ -49,5 +49,7 @@
     "@prisma/engines@7.10.0": true,
     "esbuild@0.28.2": true,
     "fsevents": false
-  }
+  },
+  "license": "MIT",
+  "author": "Gustavo Sanchez"
 }
