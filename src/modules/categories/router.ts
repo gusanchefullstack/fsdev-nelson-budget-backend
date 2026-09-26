@@ -10,15 +10,9 @@ categoriesRouter.post(
   "/budgets/:budgetId/categories",
   validate(createCategorySchema),
   async (req, res) => {
-    res
-      .status(201)
-      .json({
-        data: await createCategory(
-          currentUser(res).id,
-          String(req.params.budgetId),
-          res.locals.body,
-        ),
-      });
+    res.status(201).json({
+      data: await createCategory(currentUser(res).id, String(req.params.budgetId), res.locals.body),
+    });
   },
 );
 
