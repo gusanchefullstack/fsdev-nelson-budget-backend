@@ -68,3 +68,79 @@ export async function createBudget(
 }
 
 export { app, prisma, request };
+
+export async function createCategory(
+  agent: ReturnType<typeof request.agent>,
+  budgetId: string,
+  body: Record<string, unknown> = {},
+) {
+  const res = await api(agent).post(`/api/v1/budgets/${budgetId}/categories`, {
+    type: "EXPENSE",
+    name: "Housing",
+    ...body,
+  });
+  if (res.status !== 201)
+    throw new Error(`category failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body.data;
+}
+
+export async function createItem(
+  agent: ReturnType<typeof request.agent>,
+  categoryId: string,
+  body: Record<string, unknown> = {},
+) {
+  const res = await api(agent).post(`/api/v1/categories/${categoryId}/items`, {
+    name: "Rent",
+    description: "Apartment rent",
+    estimatedAmount: "5000.00",
+    firstExpectedDate: "2027-01-20",
+    frequency: "MONTHLY",
+    ...body,
+  });
+  if (res.status !== 201) throw new Error(`item failed: ${res.status} ${JSON.stringify(res.body)}`);
+  return res.body;
+}
+
+/** Inserts an expense transaction directly (used before the transactions API exists). */
+export async function seedExpense(
+  userId: string,
+  itemId: string,
+  localDate: string,
+  amount = "5000.00",
+) {
+  const account = await prisma.moneyAccount.create({
+    data: {
+      userId,
+      name: "Checking",
+      type: "CHECKING",
+      currency: "USD",
+      openingBalance: "10000",
+      currentBalance: "10000",
+    },
+  });
+  const vendor = await prisma.vendor.create({
+    data: { userId, name: "Landlord", type: "SERVICE", currency: "USD" },
+  });
+  const bucket = await prisma.bucket.findFirstOrThrow({
+    where: {
+      itemId,
+      startDate: { lte: new Date(`${localDate}T00:00:00Z`) },
+      endDate: { gte: new Date(`${localDate}T00:00:00Z`) },
+    },
+  });
+  return prisma.transaction.create({
+    data: {
+      userId,
+      itemId,
+      bucketId: bucket.id,
+      type: "EXPENSE",
+      amount,
+      currency: "USD",
+      occurredAt: new Date(`${localDate}T12:00:00Z`),
+      timezone: "America/Bogota",
+      localDate: new Date(`${localDate}T00:00:00Z`),
+      accountId: account.id,
+      vendorId: vendor.id,
+    },
+  });
+}
