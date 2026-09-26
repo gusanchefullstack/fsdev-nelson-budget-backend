@@ -11,7 +11,7 @@ budgetsRouter.get("/budgets", async (_req, res) => {
 });
 
 budgetsRouter.post("/budgets", validate(createBudgetSchema), async (_req, res) => {
-  res.status(201).json({ data: await createBudget(currentUser(res).id, res.locals.body) });
+  res.status(201).json(await createBudget(currentUser(res).id, res.locals.body));
 });
 
 budgetsRouter.get("/budgets/:id", async (req, res) => {

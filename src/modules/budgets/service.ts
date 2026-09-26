@@ -1,12 +1,12 @@
 import type { z } from "zod";
-import { conflict } from "../../lib/errors.js";
+import { AppError, conflict } from "../../lib/errors.js";
 import { recalcAccountBalances } from "../../lib/balances.js";
 import { ownedBudget } from "../../lib/ownership.js";
 import { prisma } from "../../lib/prisma.js";
 import { day } from "../../lib/serialize.js";
 import { fromPlainDate, todayIn } from "../../lib/temporal.js";
 import { budgetTotals } from "../../lib/totals.js";
-import { serializeItem, itemInclude } from "../items/service.js";
+import { itemInclude, resolveSchedule, serializeItem, writeBuckets } from "../items/service.js";
 import type { createBudgetSchema, updateBudgetSchema } from "./schemas.js";
 import type { SessionUser } from "../../lib/session.js";
 
@@ -61,15 +61,59 @@ export async function listBudgets(user: SessionUser) {
 
 export async function createBudget(userId: string, data: z.output<typeof createBudgetSchema>) {
   await assertNoOverlap(userId, data.currency, data.startDate, data.endDate);
-  const budget = await prisma.budget.create({
-    data: {
-      ...data,
-      userId,
-      startDate: fromPlainDate(data.startDate),
-      endDate: fromPlainDate(data.endDate),
+  const { categories = [], ...fields } = data;
+  const range = { startDate: fromPlainDate(data.startDate), endDate: fromPlainDate(data.endDate) };
+
+  // Resolve every item schedule first so a bad item fails before anything is written.
+  const notices: { code: string; message: string }[] = [];
+  const plans = categories.map((c, ci) =>
+    c.items.map((item, ii) => {
+      try {
+        const { schedule, notices: itemNotices } = resolveSchedule(range, item);
+        notices.push(...itemNotices.map((n) => ({ ...n, message: `${item.name}: ${n.message}` })));
+        return { item, schedule };
+      } catch (e) {
+        if (e instanceof AppError && e.fields) {
+          const prefixed = Object.fromEntries(
+            Object.entries(e.fields).map(([k, v]) => [`categories.${ci}.items.${ii}.${k}`, v]),
+          );
+          throw new AppError(422, "VALIDATION_ERROR", e.message, prefixed);
+        }
+        throw e;
+      }
+    }),
+  );
+
+  // All-or-nothing (FR-016)
+  const budget = await prisma.$transaction(
+    async (tx) => {
+      const b = await tx.budget.create({ data: { ...fields, userId, ...range } });
+      for (const [ci, c] of categories.entries()) {
+        const category = await tx.category.create({
+          data: { budgetId: b.id, type: c.type, name: c.name, description: c.description },
+        });
+        for (const { item, schedule } of plans[ci]!) {
+          const row = await tx.budgetItem.create({
+            data: {
+              categoryId: category.id,
+              name: item.name,
+              description: item.description,
+              estimatedAmount: item.estimatedAmount,
+              frequency: schedule.frequency,
+              customInterval: schedule.customInterval ?? null,
+              startDate: fromPlainDate(schedule.startDate),
+              endDate: fromPlainDate(schedule.endDate),
+              firstExpectedDate: fromPlainDate(schedule.firstExpectedDate),
+            },
+          });
+          await writeBuckets(tx, row.id, schedule, item.estimatedAmount);
+        }
+      }
+      return b;
     },
-  });
-  return serializeBudget(budget);
+    { timeout: 60_000 },
+  );
+  return { data: serializeBudget(budget), notices };
 }
 
 export async function getBudget(user: SessionUser, id: string) {

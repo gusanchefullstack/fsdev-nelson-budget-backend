@@ -86,7 +86,7 @@ type ScheduleInput = {
 };
 
 /** Defaults dates to the budget and clamps them into it (FR-013), returning notices for the user. */
-function resolveSchedule(budget: { startDate: Date; endDate: Date }, input: ScheduleInput) {
+export function resolveSchedule(budget: { startDate: Date; endDate: Date }, input: ScheduleInput) {
   const bs = toPlainDate(budget.startDate);
   const be = toPlainDate(budget.endDate);
   const cmp = Temporal.PlainDate.compare;
@@ -134,7 +134,7 @@ function resolveSchedule(budget: { startDate: Date; endDate: Date }, input: Sche
 }
 
 /** Rebuilds buckets and moves existing transactions into them (FR-025). */
-async function writeBuckets(
+export async function writeBuckets(
   tx: Tx,
   itemId: string,
   schedule: ItemSchedule,
