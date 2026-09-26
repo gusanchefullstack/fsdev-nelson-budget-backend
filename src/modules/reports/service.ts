@@ -44,7 +44,13 @@ export async function executionReport(
 
   const categories = new Map<
     string,
-    { id: string; name: string; type: string; items: unknown[] }
+    {
+      id: string;
+      name: string;
+      type: string;
+      items: unknown[];
+      sums: { estimated: number; actual: number; projected: number };
+    }
   >();
   const totals = {
     estimatedIncomeToDate: 0,
@@ -81,8 +87,13 @@ export async function executionReport(
         name: insight.categoryName,
         type: insight.type,
         items: [],
+        sums: { estimated: 0, actual: 0, projected: 0 },
       });
-    categories.get(categoryId)!.items.push(row);
+    const category = categories.get(categoryId)!;
+    category.items.push(row);
+    category.sums.estimated += estimated;
+    category.sums.actual += actual;
+    category.sums.projected += cents(m.projected);
     if (insight.type === "INCOME") {
       totals.estimatedIncomeToDate += estimated;
       totals.actualIncome += actual;
@@ -97,7 +108,15 @@ export async function executionReport(
   return {
     budget: { id: budget.id, name: budget.name, currency: budget.currency },
     range: { from: range.from ?? null, to: range.to ?? null },
-    categories: [...categories.values()],
+    // FR-046: execution by category as well as by item
+    categories: [...categories.values()].map(({ sums, ...c }) => ({
+      ...c,
+      subtotal: {
+        estimatedToDate: fmt(sums.estimated),
+        actual: fmt(sums.actual),
+        projected: fmt(sums.projected),
+      },
+    })),
     totals: {
       estimatedIncomeToDate: fmt(totals.estimatedIncomeToDate),
       actualIncome: fmt(totals.actualIncome),

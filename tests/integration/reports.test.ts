@@ -147,6 +147,19 @@ describe("US5 — dashboard and reports", () => {
       projectedExpense: "20000.00",
       projectedNet: "76000.00",
     });
+    // FR-046: execution by category
+    const cat = (name: string) =>
+      res.body.data.categories.find((c: { name: string }) => c.name === name);
+    expect(cat("Housing").subtotal).toEqual({
+      estimatedToDate: "20000.00",
+      actual: "5000.00",
+      projected: "20000.00",
+    });
+    expect(cat("Salaries").subtotal).toEqual({
+      estimatedToDate: "24000.00",
+      actual: "16000.00",
+      projected: "96000.00",
+    });
   });
 
   it("date filter narrows actual and estimated totals, not the projection", async () => {
