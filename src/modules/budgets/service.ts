@@ -1,9 +1,11 @@
 import type { z } from "zod";
+import { generateBuckets } from "../../domain/buckets.js";
+import { Prisma } from "../../generated/prisma/client.js";
 import { AppError, conflict } from "../../lib/errors.js";
 import { recalcAccountBalances } from "../../lib/balances.js";
 import { ownedBudget } from "../../lib/ownership.js";
 import { prisma } from "../../lib/prisma.js";
-import { day } from "../../lib/serialize.js";
+import { day, money } from "../../lib/serialize.js";
 import { fromPlainDate, todayIn } from "../../lib/temporal.js";
 import { budgetTotals } from "../../lib/totals.js";
 import { itemInclude, resolveSchedule, serializeItem, writeBuckets } from "../items/service.js";
@@ -59,7 +61,13 @@ export async function listBudgets(user: SessionUser) {
   return budgets.map((b) => ({ ...serializeBudget(b), ...totals.get(b.id)! }));
 }
 
-export async function createBudget(userId: string, data: z.output<typeof createBudgetSchema>) {
+type CreateBudgetInput = z.output<typeof createBudgetSchema>;
+
+/**
+ * Checks and resolves a nested budget without writing anything. Shared by createBudget and
+ * previewBudget so preview and create can't drift (FR-006).
+ */
+async function planBudget(userId: string, data: CreateBudgetInput) {
   await assertNoOverlap(userId, data.currency, data.startDate, data.endDate);
   const { categories = [], ...fields } = data;
   const range = { startDate: fromPlainDate(data.startDate), endDate: fromPlainDate(data.endDate) };
@@ -83,6 +91,11 @@ export async function createBudget(userId: string, data: z.output<typeof createB
       }
     }),
   );
+  return { fields, range, categories, plans, notices };
+}
+
+export async function createBudget(userId: string, data: CreateBudgetInput) {
+  const { fields, range, categories, plans, notices } = await planBudget(userId, data);
 
   // All-or-nothing (FR-016)
   const budget = await prisma.$transaction(
@@ -114,6 +127,40 @@ export async function createBudget(userId: string, data: z.output<typeof createB
     { timeout: 60_000 },
   );
   return { data: serializeBudget(budget), notices };
+}
+
+/** Planned totals of an unsaved nested budget; an item's total is its amount × its buckets. */
+export async function previewBudget(userId: string, data: CreateBudgetInput) {
+  const { categories, plans, notices } = await planBudget(userId, data);
+  const zero = new Prisma.Decimal(0);
+  const sums = { INCOME: zero, EXPENSE: zero };
+  const previewCategories = categories.map((c, ci) => {
+    const items = plans[ci]!.map(({ item, schedule }) => {
+      const occurrences = generateBuckets(schedule).length;
+      const total = new Prisma.Decimal(item.estimatedAmount).mul(occurrences);
+      return { name: item.name, total, occurrences };
+    });
+    const total = items.reduce((sum, i) => sum.add(i.total), zero);
+    sums[c.type] = sums[c.type].add(total);
+    return {
+      type: c.type,
+      name: c.name,
+      plannedTotal: money(total),
+      items: items.map((i) => ({
+        name: i.name,
+        plannedTotal: money(i.total),
+        occurrences: i.occurrences,
+      })),
+    };
+  });
+  return {
+    currency: data.currency,
+    plannedIncome: money(sums.INCOME),
+    plannedExpense: money(sums.EXPENSE),
+    plannedNet: money(sums.INCOME.sub(sums.EXPENSE)),
+    categories: previewCategories,
+    notices,
+  };
 }
 
 export async function getBudget(user: SessionUser, id: string) {
