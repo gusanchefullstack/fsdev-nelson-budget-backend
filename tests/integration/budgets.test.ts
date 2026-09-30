@@ -137,6 +137,18 @@ describe("US2 — budgets", () => {
     expect(account.currentBalance.toFixed(2)).toBe("10000.00");
   });
 
+  it("no longer serves the spec 003 planned-totals preview (spec 004 FR-020)", async () => {
+    const { agent } = await signUpAgent();
+    const res = await api(agent).post("/api/v1/budget-previews", {
+      name: "2027",
+      currency: "USD",
+      startDate: "2027-01-01",
+      endDate: "2027-12-31",
+    });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+
   it("hides other users' budgets", async () => {
     const a = await signUpAgent();
     const b = await signUpAgent();
