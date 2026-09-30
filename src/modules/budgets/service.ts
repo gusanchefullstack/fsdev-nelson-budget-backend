@@ -1,4 +1,6 @@
+import "temporal-polyfill/global";
 import type { z } from "zod";
+import { bucketFigures } from "../../domain/insights.js";
 import { generateBuckets } from "../../domain/buckets.js";
 import { Prisma } from "../../generated/prisma/client.js";
 import { AppError, conflict } from "../../lib/errors.js";
@@ -13,6 +15,20 @@ import type { createBudgetSchema, updateBudgetSchema } from "./schemas.js";
 import type { SessionUser } from "../../lib/session.js";
 
 type BudgetRow = Awaited<ReturnType<typeof prisma.budget.findFirstOrThrow>>;
+type Cents = ReturnType<typeof bucketFigures>;
+
+const zero = (): Cents => ({ estimatedTotal: 0, estimatedToDate: 0, actual: 0 });
+const addCents = (a: Cents, b: Cents): Cents => ({
+  estimatedTotal: a.estimatedTotal + b.estimatedTotal,
+  estimatedToDate: a.estimatedToDate + b.estimatedToDate,
+  actual: a.actual + b.actual,
+});
+const fmt = (c: number) => (c / 100).toFixed(2);
+const toFigures = (c: Cents) => ({
+  estimatedTotal: fmt(c.estimatedTotal),
+  estimatedToDate: fmt(c.estimatedToDate),
+  actual: fmt(c.actual),
+});
 
 export const serializeBudget = (b: BudgetRow) => ({
   id: b.id,
@@ -176,8 +192,20 @@ export async function getBudget(user: SessionUser, id: string) {
   });
   const today = todayIn(user.timezone);
   const totals = (await budgetTotals([id], today.toString())).get(id)!;
+  const estimatedTotals = { INCOME: 0, EXPENSE: 0 };
+  // Spec 004: execution figures per item and category, with the same "today" as the totals
   const categories = budget.categories.map((c) => {
-    const items = c.items.map((i) => serializeItem({ ...i, category: { ...c, budget } }, today));
+    let sum = zero();
+    const items = c.items.map((i) => {
+      const item = serializeItem({ ...i, category: { ...c, budget } }, today);
+      const f = bucketFigures(
+        item.buckets.map((b) => ({ ...b, startDate: Temporal.PlainDate.from(b.startDate) })),
+        today,
+      );
+      sum = addCents(sum, f);
+      return { ...item, figures: toFigures(f) };
+    });
+    estimatedTotals[c.type] += sum.estimatedTotal;
     return {
       id: c.id,
       type: c.type,
@@ -187,12 +215,15 @@ export async function getBudget(user: SessionUser, id: string) {
         items: items.length,
         transactions: items.reduce((n, i) => n + i.transactionCount, 0),
       },
+      figures: toFigures(sum),
       items,
     };
   });
   return {
     ...serializeBudget(budget),
     ...totals,
+    estimatedIncomeTotal: fmt(estimatedTotals.INCOME),
+    estimatedExpenseTotal: fmt(estimatedTotals.EXPENSE),
     counts: {
       categories: categories.length,
       items: categories.reduce((n, c) => n + c.counts.items, 0),

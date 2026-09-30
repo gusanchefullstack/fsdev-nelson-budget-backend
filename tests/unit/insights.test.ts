@@ -1,6 +1,11 @@
 import "temporal-polyfill/global";
 import { describe, expect, it } from "vitest";
-import { itemMetrics, budgetInsights, type InsightItem } from "../../src/domain/insights.js";
+import {
+  bucketFigures,
+  budgetInsights,
+  itemMetrics,
+  type InsightItem,
+} from "../../src/domain/insights.js";
 
 const d = (s: string) => Temporal.PlainDate.from(s);
 
@@ -104,5 +109,50 @@ describe("budgetInsights (FR-048, FR-049)", () => {
   it("does not flag a 10% difference exactly", () => {
     const { suggestions } = budgetInsights([rent(["5500.00", "5500.00"])], d("2027-03-10"), "USD");
     expect(suggestions.some((s) => s.rule === "EXPENSE_OVER_ESTIMATE")).toBe(false);
+  });
+});
+
+describe("bucketFigures", () => {
+  const buckets = rent(["5000.00", "0.00", "0.00", "1200.50"]).buckets;
+
+  it("counts nothing to date before the budget starts", () => {
+    expect(bucketFigures(buckets, d("2026-12-31"))).toEqual({
+      estimatedTotal: 2_000_000,
+      estimatedToDate: 0,
+      actual: 620_050,
+    });
+  });
+
+  it("counts buckets that have started, including one starting today", () => {
+    expect(bucketFigures(buckets, d("2027-03-05")).estimatedToDate).toBe(1_500_000);
+    expect(bucketFigures(buckets, d("2027-03-04")).estimatedToDate).toBe(1_000_000);
+  });
+
+  it("counts the whole estimate once the budget has ended", () => {
+    const f = bucketFigures(buckets, d("2028-01-01"));
+    expect(f.estimatedToDate).toBe(f.estimatedTotal);
+  });
+
+  it("adds actuals from every bucket, future ones included", () => {
+    expect(bucketFigures(buckets, d("2027-01-10")).actual).toBe(620_050);
+  });
+
+  it("adds in exact cents", () => {
+    const f = bucketFigures(
+      [
+        { startDate: d("2027-01-01"), estimatedAmount: "0.10", actualAmount: "0.10" },
+        { startDate: d("2027-01-02"), estimatedAmount: "0.20", actualAmount: "0.20" },
+      ],
+      d("2027-02-01"),
+    );
+    expect(f).toEqual({ estimatedTotal: 30, estimatedToDate: 30, actual: 30 });
+  });
+
+  it("is all zeros with no buckets", () => {
+    expect(bucketFigures([], d("2027-01-01"))).toEqual({
+      estimatedTotal: 0,
+      estimatedToDate: 0,
+      actual: 0,
+    });
   });
 });

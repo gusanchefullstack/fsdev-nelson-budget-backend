@@ -21,6 +21,23 @@ const cents = (v: string) => Math.round(Number(v) * 100);
 const fmt = (c: number) => (c / 100).toFixed(2);
 const cmp = Temporal.PlainDate.compare;
 
+/** Full-period estimate, estimate to date (buckets started by today) and actual, in cents. */
+export function bucketFigures(
+  buckets: Pick<InsightBucket, "startDate" | "estimatedAmount" | "actualAmount">[],
+  today: Temporal.PlainDate,
+) {
+  let estimatedTotal = 0;
+  let estimatedToDate = 0;
+  let actual = 0;
+  for (const b of buckets) {
+    const est = cents(b.estimatedAmount);
+    estimatedTotal += est;
+    if (cmp(b.startDate, today) <= 0) estimatedToDate += est;
+    actual += cents(b.actualAmount);
+  }
+  return { estimatedTotal, estimatedToDate, actual };
+}
+
 export function itemMetrics(item: InsightItem, today: Temporal.PlainDate) {
   let estimatedToDate = 0;
   let actualToDate = 0;

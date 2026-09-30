@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   api,
   createBudget,
@@ -146,5 +146,173 @@ describe("US2 — budgets", () => {
       404,
     );
     expect((await api(b.agent).delete(`/api/v1/budgets/${budget.id}`)).status).toBe(404);
+  });
+});
+
+const cents = (v: string) => Math.round(Number(v) * 100);
+const fmt = (c: number) => (c / 100).toFixed(2);
+type Figures = { estimatedTotal: string; estimatedToDate: string; actual: string };
+type DetailItem = { id: string; figures: Figures };
+type DetailCategory = { type: string; name: string; figures: Figures; items: DetailItem[] };
+
+// Spec 004: per-item and per-category execution figures, today = 2027-04-10 (America/Bogota)
+describe("GET /budgets/:id figures", () => {
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2027-04-10T17:00:00Z"));
+    await resetDb();
+  });
+  afterEach(() => vi.useRealTimers());
+  afterAll(() => prisma.$disconnect());
+
+  it("sums bucket estimates and actuals per item, category and type, matching the report", async () => {
+    const { agent } = await signUpAgent();
+    const budget = await createBudget(agent);
+    const housing = await createCategory(agent, budget.id);
+    const salaries = await createCategory(agent, budget.id, { type: "INCOME", name: "Salaries" });
+    await createCategory(agent, budget.id, { name: "Empty" });
+
+    const frequencies: [string, Record<string, unknown>][] = [
+      ["ONE_TIME", { firstExpectedDate: "2027-03-15" }],
+      ["DAILY", { estimatedAmount: "10", firstExpectedDate: "2027-01-01" }],
+      ["WEEKLY", { estimatedAmount: "100", firstExpectedDate: "2027-01-04" }],
+      ["BIWEEKLY", { estimatedAmount: "200", firstExpectedDate: "2027-01-08" }],
+      ["MONTHLY", {}],
+      ["QUARTERLY", { firstExpectedDate: "2027-02-01" }],
+      ["ANNUALLY", { firstExpectedDate: "2027-06-30" }],
+      [
+        "CUSTOM_DAYS",
+        { customInterval: 10, estimatedAmount: "50", firstExpectedDate: "2027-01-10" },
+      ],
+      ["CUSTOM_MONTHS", { customInterval: 2, firstExpectedDate: "2027-01-15" }],
+    ];
+    const items: Record<string, { id: string }> = {};
+    for (const [frequency, extra] of frequencies) {
+      items[frequency] = (
+        await createItem(agent, housing.id, { name: frequency, frequency, ...extra })
+      ).data;
+    }
+    // Past the budget end: clamped to Dec 31
+    const clamped = (
+      await createItem(agent, housing.id, { name: "Clamped", endDate: "2028-06-30" })
+    ).data;
+    const salary = (
+      await createItem(agent, salaries.id, {
+        name: "Salary",
+        estimatedAmount: "8000",
+        firstExpectedDate: "2027-01-30",
+      })
+    ).data;
+
+    const account = (
+      await api(agent).post("/api/v1/accounts", {
+        name: "Checking",
+        type: "CHECKING",
+        currency: "USD",
+        openingBalance: "0",
+      })
+    ).body.data;
+    const vendor = (
+      await api(agent).post("/api/v1/vendors", {
+        name: "Landlord",
+        type: "SERVICE",
+        currency: "USD",
+      })
+    ).body.data;
+    const payor = (
+      await api(agent).post("/api/v1/payors", {
+        name: "Employer",
+        type: "EMPLOYER",
+        currency: "USD",
+      })
+    ).body.data;
+    const post = async (body: object) => {
+      const res = await api(agent).post("/api/v1/transactions", { accountId: account.id, ...body });
+      expect(res.status).toBe(201);
+    };
+    await post({
+      itemId: items.MONTHLY!.id,
+      amount: "5000",
+      localDateTime: "2027-02-18T20:00",
+      vendorId: vendor.id,
+    });
+    await post({
+      itemId: items.WEEKLY!.id,
+      amount: "120.25",
+      localDateTime: "2027-03-02T09:00",
+      vendorId: vendor.id,
+    });
+    await post({
+      itemId: items.CUSTOM_DAYS!.id,
+      amount: "45",
+      localDateTime: "2027-01-12T09:00",
+      vendorId: vendor.id,
+    });
+    await post({
+      itemId: salary.id,
+      amount: "8000",
+      localDateTime: "2027-01-30T08:00",
+      payorId: payor.id,
+    });
+
+    const res = await api(agent).get(`/api/v1/budgets/${budget.id}`);
+    expect(res.status).toBe(200);
+    const data = res.body.data;
+    const categories = data.categories as DetailCategory[];
+    const allItems = categories.flatMap((c) => c.items);
+
+    // (a) every frequency, and the clamped item: estimated total = sum of stored bucket estimates
+    for (const item of [...Object.values(items), clamped, salary]) {
+      const buckets = await prisma.bucket.findMany({ where: { itemId: item.id } });
+      const got = allItems.find((i) => i.id === item.id)!.figures;
+      expect(got.estimatedTotal).toBe(
+        fmt(buckets.reduce((n, b) => n + cents(b.estimatedAmount.toFixed(2)), 0)),
+      );
+      expect(got.actual).toBe(
+        fmt(buckets.reduce((n, b) => n + cents(b.actualAmount.toFixed(2)), 0)),
+      );
+    }
+    expect(allItems.find((i) => i.id === items.WEEKLY!.id)!.figures.actual).toBe("120.25");
+
+    // (b) category = sum of its items; an empty category is all zeros
+    for (const c of categories) {
+      for (const key of ["estimatedTotal", "estimatedToDate", "actual"] as const) {
+        expect(c.figures[key]).toBe(fmt(c.items.reduce((n, i) => n + cents(i.figures[key]), 0)));
+      }
+    }
+    expect(categories.find((c) => c.name === "Empty")!.figures).toEqual({
+      estimatedTotal: "0.00",
+      estimatedToDate: "0.00",
+      actual: "0.00",
+    });
+
+    // (c) per-type sums match the new full-period totals and the existing to-date totals
+    const byType = (type: string, key: keyof Figures) =>
+      fmt(categories.filter((c) => c.type === type).reduce((n, c) => n + cents(c.figures[key]), 0));
+    expect(data.estimatedIncomeTotal).toBe(byType("INCOME", "estimatedTotal"));
+    expect(data.estimatedExpenseTotal).toBe(byType("EXPENSE", "estimatedTotal"));
+    expect(data.estimatedIncomeToDate).toBe(byType("INCOME", "estimatedToDate"));
+    expect(data.estimatedExpenseToDate).toBe(byType("EXPENSE", "estimatedToDate"));
+    expect(data.actualIncome).toBe(byType("INCOME", "actual"));
+    expect(data.actualExpense).toBe(byType("EXPENSE", "actual"));
+
+    // (d) parity with the execution report (no date range)
+    const report = await api(agent).get(`/api/v1/reports/budgets/${budget.id}/execution`);
+    const reportItems = (
+      report.body.data.categories as {
+        items: { itemId: string; actual: string; estimatedToDate: string }[];
+      }[]
+    ).flatMap((c) => c.items);
+    for (const r of reportItems) {
+      const got = allItems.find((i) => i.id === r.itemId)!.figures;
+      expect(got.actual).toBe(r.actual);
+      expect(got.estimatedToDate).toBe(r.estimatedToDate);
+    }
+    expect(reportItems).toHaveLength(allItems.length);
+
+    // (e) 2-decimal money strings
+    for (const i of allItems) {
+      for (const v of Object.values(i.figures)) expect(v).toMatch(/^-?\d+\.\d{2}$/);
+    }
   });
 });
